@@ -17,6 +17,7 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
+import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.util.Matrix
 import android.graphics.BitmapFactory
@@ -61,6 +62,12 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
     private val _isProcessing = MutableStateFlow<Boolean>(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
+    private val _processingProgress = MutableStateFlow<Float>(0f)
+    val processingProgress: StateFlow<Float> = _processingProgress.asStateFlow()
+
+    private val _processingStatus = MutableStateFlow<String>("")
+    val processingStatus: StateFlow<String> = _processingStatus.asStateFlow()
+
     private val _eventFlow = MutableSharedFlow<UiEvent>()
     val eventFlow: SharedFlow<UiEvent> = _eventFlow.asSharedFlow()
 
@@ -97,6 +104,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
     fun selectFile(context: Context, uri: Uri) {
         _selectedFileUri.value = uri
         _isProcessing.value = true
+        _processingProgress.value = 0.1f
+        _processingStatus.value = "正在读取并分析 PDF 文件..."
         _isPasswordProtected.value = false
         _pageCount.value = 0
 
@@ -118,6 +127,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 _selectedFileName.value = fileName
                 _selectedFileSize.value = fileSize
 
+                _processingProgress.value = 0.4f
+                _processingStatus.value = "正在缓存文件..."
+
                 // Copy to a temp file to read with PDFBox and verify encryption
                 val tempFile = File(context.cacheDir, "temp_check.pdf")
                 context.contentResolver.openInputStream(uri)?.use { input ->
@@ -125,6 +137,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                         input.copyTo(output)
                     }
                 }
+
+                _processingProgress.value = 0.7f
+                _processingStatus.value = "正在解析文档元数据与页数..."
 
                 try {
                     // Try to load without password
@@ -182,6 +197,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -198,7 +215,20 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 }
 
                 val stripper = PDFTextStripper()
-                val text = stripper.getText(document)
+                val totalPages = document.numberOfPages
+                val stringBuilder = StringBuilder()
+                for (i in 1..totalPages) {
+                    _processingStatus.value = "正在提取文本: 第 $i / $totalPages 页..."
+                    _processingProgress.value = i.toFloat() / totalPages.toFloat()
+                    
+                    stripper.startPage = i
+                    stripper.endPage = i
+                    val pageText = stripper.getText(document)
+                    if (pageText != null) {
+                        stringBuilder.append(pageText)
+                    }
+                }
+                val text = stringBuilder.toString()
                 document.close()
 
                 if (text.isNullOrBlank()) {
@@ -239,6 +269,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -246,6 +278,7 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 
                 // Verify password if encrypted
                 if (_isPasswordProtected.value) {
+                    _processingStatus.value = "正在验证密码..."
                     try {
                         val doc = PDDocument.load(tempFile, password)
                         doc.close()
@@ -265,6 +298,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
 
                 val savedPaths = mutableListOf<String>()
                 for (i in 0 until totalPages) {
+                    _processingStatus.value = "正在渲染页面为图片: 第 ${i + 1} / $totalPages 页..."
+                    _processingProgress.value = (i + 1).toFloat() / totalPages.toFloat()
                     val page = pdfRenderer.openPage(i)
                     // Scale for high quality (density ratio 2x)
                     val bitmap = Bitmap.createBitmap(page.width * 2, page.height * 2, Bitmap.Config.ARGB_8888)
@@ -308,6 +343,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -331,6 +368,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 val totalPages = document.numberOfPages
 
                 for (pageIndex in 0 until totalPages) {
+                    _processingStatus.value = "正在分析页面提取图片: 第 ${pageIndex + 1} / $totalPages 页 (已提取 $imageCount 张)..."
+                    _processingProgress.value = (pageIndex + 1).toFloat() / totalPages.toFloat()
                     val page = document.getPage(pageIndex)
                     val resources = page.resources ?: continue
                     for (name in resources.xObjectNames) {
@@ -380,6 +419,8 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -396,6 +437,7 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 }
 
                 val totalPages = sourceDoc.numberOfPages
+                _processingStatus.value = "正在解析拆分范围..."
                 val selectedPages = parsePageRange(pageRangeStr, totalPages)
 
                 if (selectedPages.isEmpty()) {
@@ -405,7 +447,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 }
 
                 val destinationDoc = PDDocument()
-                for (pageIndex in selectedPages) {
+                for ((index, pageIndex) in selectedPages.withIndex()) {
+                    _processingStatus.value = "正在提取并导入页面: 第 ${pageIndex + 1} 页 (${index + 1} / ${selectedPages.size})..."
+                    _processingProgress.value = (index + 1).toFloat() / selectedPages.size.toFloat()
                     // importPage clones page elements and resources safely
                     destinationDoc.importPage(sourceDoc.getPage(pageIndex))
                 }
@@ -440,11 +484,109 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         }
     }
 
+    // Task 4b: Split PDF to individual single pages and compress to ZIP
+    fun splitPdfToZip(context: Context, password: String = "") {
+        val uri = _selectedFileUri.value ?: return
+        val fileName = _selectedFileName.value ?: "document.pdf"
+        _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val tempFile = copyUriToTempFile(context, uri)
+                val sourceDoc = try {
+                    if (password.isNotEmpty()) {
+                        PDDocument.load(tempFile, password)
+                    } else {
+                        PDDocument.load(tempFile)
+                    }
+                } catch (e: Exception) {
+                    _eventFlow.emit(UiEvent.ShowToast("打开 PDF 失败，密码错误"))
+                    return@launch
+                }
+
+                val totalPages = sourceDoc.numberOfPages
+                if (totalPages <= 1) {
+                    _eventFlow.emit(UiEvent.ShowToast("该 PDF 只有一页，无需拆分为单页 ZIP"))
+                    sourceDoc.close()
+                    return@launch
+                }
+
+                val baseName = fileName.substringBeforeLast(".")
+                val tempSplitDir = File(context.cacheDir, "split_pages_${System.currentTimeMillis()}")
+                tempSplitDir.mkdirs()
+
+                val createdFiles = mutableListOf<File>()
+
+                for (i in 0 until totalPages) {
+                    _processingStatus.value = "正在分割单页: 第 ${i + 1} / $totalPages 页..."
+                    _processingProgress.value = ((i + 1).toFloat() / totalPages.toFloat()) * 0.7f
+                    val singleDoc = PDDocument()
+                    singleDoc.importPage(sourceDoc.getPage(i))
+                    val pageFile = File(tempSplitDir, "${baseName}_第${i + 1}页.pdf")
+                    singleDoc.save(pageFile)
+                    singleDoc.close()
+                    createdFiles.add(pageFile)
+                }
+                sourceDoc.close()
+
+                // Compress to ZIP
+                val outputFolder = File(context.getExternalFilesDir("extracted_split"), "split_zips")
+                outputFolder.mkdirs()
+                val zipFile = File(outputFolder, "${baseName}_单页拆分.zip")
+
+                java.util.zip.ZipOutputStream(java.io.FileOutputStream(zipFile)).use { zos ->
+                    val buffer = ByteArray(4096)
+                    for ((index, file) in createdFiles.withIndex()) {
+                        if (file.exists()) {
+                            _processingStatus.value = "正在打包压缩为 ZIP: ${file.name} (${index + 1} / ${createdFiles.size})..."
+                            _processingProgress.value = 0.7f + ((index + 1).toFloat() / createdFiles.size.toFloat()) * 0.3f
+                            val entry = java.util.zip.ZipEntry(file.name)
+                            zos.putNextEntry(entry)
+                            java.io.BufferedInputStream(java.io.FileInputStream(file)).use { bis ->
+                                var len: Int
+                                while (bis.read(buffer).also { len = it } > 0) {
+                                    zos.write(buffer, 0, len)
+                                }
+                            }
+                            zos.closeEntry()
+                        }
+                    }
+                }
+
+                // Clean up temp files
+                createdFiles.forEach { it.delete() }
+                tempSplitDir.delete()
+
+                val summary = "成功将 PDF 拆分为 $totalPages 个单页并打包为 ZIP 压缩包"
+
+                // Save history
+                val record = ExtractionRecord(
+                    fileName = fileName,
+                    actionType = "SPLIT",
+                    resultSummary = summary,
+                    filePath = zipFile.absolutePath
+                )
+                repository.insert(record)
+
+                _eventFlow.emit(UiEvent.OperationSuccess(summary, zipFile.absolutePath, "SPLIT"))
+            } catch (e: Exception) {
+                Log.e("PdfViewModel", "Split PDF to ZIP failed", e)
+                _eventFlow.emit(UiEvent.ShowToast("单页拆分 ZIP 失败: ${e.localizedMessage}"))
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
     // Task 5: Decrypt PDF (Remove Password)
     fun decryptPdf(context: Context, password: String) {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.1f
+        _processingStatus.value = "正在读取 PDF 文件并校验密码..."
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -455,6 +597,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                     _eventFlow.emit(UiEvent.ShowToast("密码不正确，无法解密"))
                     return@launch
                 }
+
+                _processingProgress.value = 0.5f
+                _processingStatus.value = "正在移除安全与加密限制..."
 
                 // Remove security features
                 sourceDoc.setAllSecurityToBeRemoved(true)
@@ -613,12 +758,18 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
             return
         }
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在初始化合并流..."
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val destinationDoc = PDDocument()
                 val tempFiles = mutableListOf<File>()
                 
                 for (i in files.indices) {
+                    _processingStatus.value = "正在合并文件 (${i + 1} / ${files.size}): ${files[i].second}..."
+                    _processingProgress.value = (i + 1).toFloat() / files.size.toFloat()
+
                     val uri = files[i].first
                     val tempFile = File(context.cacheDir, "temp_merge_${System.currentTimeMillis().hashCode().coerceAtLeast(0)}_$i.pdf")
                     context.contentResolver.openInputStream(uri)?.use { input ->
@@ -704,11 +855,17 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
             return
         }
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在初始化图像转换器..."
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val pdfDoc = android.graphics.pdf.PdfDocument()
                 
                 for (i in images.indices) {
+                    _processingStatus.value = "正在转换图片 (${i + 1} / ${images.size}): ${images[i].second}..."
+                    _processingProgress.value = (i + 1).toFloat() / images.size.toFloat()
+
                     val uri = images[i].first
                     context.contentResolver.openInputStream(uri)?.use { inputStream ->
                         val bitmap = BitmapFactory.decodeStream(inputStream)
@@ -752,7 +909,16 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         }
     }
 
-    fun addWatermarkToPdf(context: Context, watermarkText: String, fontSize: Float, password: String = "") {
+    fun addWatermarkToPdf(
+        context: Context,
+        watermarkText: String,
+        fontSize: Float,
+        opacity: Float = 0.3f,
+        rotation: Float = 45f,
+        position: String = "CENTER",
+        colorHex: String = "#808080",
+        password: String = ""
+    ) {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         if (watermarkText.trim().isEmpty()) {
@@ -762,6 +928,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
             return
         }
         _isProcessing.value = true
+        _processingProgress.value = 0.05f
+        _processingStatus.value = "正在读取 PDF 文件..."
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val tempFile = copyUriToTempFile(context, uri)
@@ -778,21 +947,95 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
 
                 val font = PDType1Font.HELVETICA_BOLD
                 val totalPages = doc.numberOfPages
-                
+
+                // Parse custom RGB colors from hex
+                val parsedColor = try {
+                    Color.parseColor(colorHex)
+                } catch (e: Exception) {
+                    Color.GRAY
+                }
+                val r = Color.red(parsedColor)
+                val g = Color.green(parsedColor)
+                val b = Color.blue(parsedColor)
+
+                // Define transparency/opacity
+                val graphicsState = PDExtendedGraphicsState().apply {
+                    nonStrokingAlphaConstant = opacity
+                }
+
+                // Compute font bounds
+                val textWidth = font.getStringWidth(watermarkText) / 1000f * fontSize
+                val textHeight = fontSize * 0.7f // CapHeight approximation for Helvetica
+                val margin = 40f
+
                 for (i in 0 until totalPages) {
+                    _processingStatus.value = "正在添加水印: 第 ${i + 1} / $totalPages 页..."
+                    _processingProgress.value = (i + 1).toFloat() / totalPages.toFloat()
                     val page = doc.getPage(i)
                     val contentStream = PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true)
                     
-                    contentStream.beginText()
-                    contentStream.setFont(font, fontSize)
-                    contentStream.setNonStrokingColor(220, 220, 220) // light gray
-                    
                     val width = page.mediaBox.width
                     val height = page.mediaBox.height
-                    
-                    contentStream.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(45.0), width * 0.15f, height * 0.15f))
-                    contentStream.showText(watermarkText)
-                    contentStream.endText()
+
+                    // Set transparency graphics state
+                    contentStream.setGraphicsStateParameters(graphicsState)
+
+                    // Compute center points (cx, cy) depending on position layout selection
+                    val centers = mutableListOf<Pair<Float, Float>>()
+                    when (position) {
+                        "TOP_LEFT" -> {
+                            centers.add(Pair(margin + textWidth / 2f, height - margin - textHeight / 2f))
+                        }
+                        "TOP_RIGHT" -> {
+                            centers.add(Pair(width - margin - textWidth / 2f, height - margin - textHeight / 2f))
+                        }
+                        "BOTTOM_LEFT" -> {
+                            centers.add(Pair(margin + textWidth / 2f, margin + textHeight / 2f))
+                        }
+                        "BOTTOM_RIGHT" -> {
+                            centers.add(Pair(width - margin - textWidth / 2f, margin + textHeight / 2f))
+                        }
+                        "CENTER" -> {
+                            centers.add(Pair(width / 2f, height / 2f))
+                        }
+                        "TILE" -> {
+                            // Grid tiling of watermark with adaptive step offsets
+                            val stepX = textWidth + 120f
+                            val stepY = textHeight + 160f
+                            
+                            var currX = 40f + textWidth / 2f
+                            while (currX < width) {
+                                var currY = 40f + textHeight / 2f
+                                while (currY < height) {
+                                    centers.add(Pair(currX, currY))
+                                    currY += stepY
+                                }
+                                currX += stepX
+                            }
+                        }
+                        else -> {
+                            centers.add(Pair(width / 2f, height / 2f))
+                        }
+                    }
+
+                    val rad = Math.toRadians(rotation.toDouble())
+                    val cosValue = Math.cos(rad).toFloat()
+                    val sinValue = Math.sin(rad).toFloat()
+
+                    // Render watermarks centered at all targeted centers on this page
+                    for ((cx, cy) in centers) {
+                        // Math matrix translation & rotation around text's local center:
+                        val tx = cx - (textWidth / 2f) * cosValue + (textHeight / 2f) * sinValue
+                        val ty = cy - (textWidth / 2f) * sinValue - (textHeight / 2f) * cosValue
+
+                        contentStream.beginText()
+                        contentStream.setFont(font, fontSize)
+                        contentStream.setNonStrokingColor(r, g, b)
+                        contentStream.setTextMatrix(Matrix.getRotateInstance(rad, tx, ty))
+                        contentStream.showText(watermarkText)
+                        contentStream.endText()
+                    }
+
                     contentStream.close()
                 }
 
@@ -803,7 +1046,7 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 doc.save(watermarkedFile)
                 doc.close()
 
-                val summary = "成功为 PDF 添加了文字水印"
+                val summary = "成功为 PDF 添加了自定义文字水印"
                 val record = ExtractionRecord(
                     fileName = watermarkedFile.name,
                     actionType = "SPLIT",
@@ -813,6 +1056,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 repository.insert(record)
 
                 _eventFlow.emit(UiEvent.OperationSuccess(summary, watermarkedFile.absolutePath, "SPLIT"))
+            } catch (e: IllegalArgumentException) {
+                Log.e("PdfViewModel", "Watermark text contains unsupported characters", e)
+                _eventFlow.emit(UiEvent.ShowToast("加水印失败：当前字体仅支持英文、数字与英文标点，不支持中文等字符"))
             } catch (e: Exception) {
                 Log.e("PdfViewModel", "Failed to add watermark", e)
                 _eventFlow.emit(UiEvent.ShowToast("加水印失败: ${e.localizedMessage}"))
@@ -833,6 +1079,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         val uri = _selectedFileUri.value ?: return
         val fileName = _selectedFileName.value ?: "document.pdf"
         _isProcessing.value = true
+        _processingProgress.value = 0.2f
+        _processingStatus.value = "正在读取 PDF 文件并加载属性..."
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val tempFile = copyUriToTempFile(context, uri)
@@ -846,6 +1095,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                     _eventFlow.emit(UiEvent.ShowToast("打开 PDF 失败，可能密码错误"))
                     return@launch
                 }
+
+                _processingProgress.value = 0.6f
+                _processingStatus.value = "正在写入新的属性信息..."
 
                 val info = doc.documentInformation
                 info.title = title

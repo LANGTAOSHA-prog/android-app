@@ -107,6 +107,8 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
     val pageCount by viewModel.pageCount.collectAsStateWithLifecycle()
     val isPasswordProtected by viewModel.isPasswordProtected.collectAsStateWithLifecycle()
     val isProcessing by viewModel.isProcessing.collectAsStateWithLifecycle()
+    val processingProgress by viewModel.processingProgress.collectAsStateWithLifecycle()
+    val processingStatus by viewModel.processingStatus.collectAsStateWithLifecycle()
     val historyRecords by viewModel.historyRecords.collectAsStateWithLifecycle()
 
     // New toolbox states collected from ViewModel
@@ -136,6 +138,10 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
     
     var watermarkTextInput by remember { mutableStateOf("") }
     var watermarkFontSizeInput by remember { mutableFloatStateOf(36f) }
+    var watermarkOpacityInput by remember { mutableFloatStateOf(0.3f) }
+    var watermarkRotationInput by remember { mutableFloatStateOf(45f) }
+    var watermarkPositionInput by remember { mutableStateOf("CENTER") }
+    var watermarkColorInput by remember { mutableStateOf("#808080") }
     
     var metaTitleInput by remember { mutableStateOf("") }
     var metaAuthorInput by remember { mutableStateOf("") }
@@ -213,12 +219,9 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                     imageGalleryTitle = "提取素材 - ${selectedName ?: ""}"
                                     imageGalleryFolderPath = path
                                 }
-                                "UNLOCKED" -> {
+                                "UNLOCKED", "SPLIT", "MERGE", "IMAGES_TO_PDF", "WATERMARK", "METADATA" -> {
                                     showSuccessDialogFile = file
                                     successDialogSummary = event.summary
-                                }
-                                "SPLIT", "MERGE", "IMAGES_TO_PDF", "WATERMARK", "METADATA" -> {
-                                    openFileInSystem(context, file)
                                 }
                             }
                         }
@@ -402,7 +405,7 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                 }
             }
 
-            // Spinner Overlay
+            // Spinner/Progress Overlay
             if (isProcessing) {
                 Box(
                     modifier = Modifier
@@ -413,29 +416,77 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                 ) {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        shape = RoundedCornerShape(16.dp),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                        modifier = Modifier.padding(32.dp)
+                        shape = RoundedCornerShape(24.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth(0.85f)
+                            .padding(16.dp)
                     ) {
                         Column(
                             modifier = Modifier.padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.primary,
-                                strokeWidth = 4.dp
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.size(72.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    progress = processingProgress,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    strokeWidth = 5.dp,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                Text(
+                                    text = "${(processingProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(20.dp))
+                            
                             Text(
-                                text = "正在解压处理中...",
-                                fontWeight = FontWeight.Medium,
+                                text = "正在处理 PDF 任务",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            
+                            Spacer(modifier = Modifier.height(6.dp))
+                            
+                            val displayStatus = if (processingStatus.isNotEmpty()) {
+                                processingStatus
+                            } else {
+                                "正在分析并处理，请稍候..."
+                            }
+                            
                             Text(
-                                text = "大文件或渲染图片可能需要一些时间，请稍候",
-                                fontSize = 12.sp,
+                                text = displayStatus,
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            LinearProgressIndicator(
+                                progress = processingProgress,
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                            )
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            Text(
+                                text = "任务正在后台执行，请勿关闭应用",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline,
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -1064,7 +1115,9 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                 .padding(16.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(24.dp)
+                                modifier = Modifier
+                                    .padding(24.dp)
+                                    .verticalScroll(rememberScrollState())
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
@@ -1075,7 +1128,7 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "添加文字水印",
+                                        text = "添加高级文字水印",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 18.sp,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -1083,22 +1136,23 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                 }
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    text = "可在选中 PDF 的每一页中心倾斜添加版权或防伪标识。\n提示：目前支持英文、数字与基本标点符号。",
-                                    fontSize = 13.sp,
+                                    text = "在 PDF 页面上添加防伪、版权或保密水印。支持设置文字、大小、透明度、旋转、位置和颜色。",
+                                    fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    lineHeight = 18.sp
+                                    lineHeight = 17.sp
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 OutlinedTextField(
                                     value = watermarkTextInput,
                                     onValueChange = { watermarkTextInput = it },
-                                    label = { Text("水印文字") },
+                                    label = { Text("水印文字内容") },
                                     placeholder = { Text("如: CONFIDENTIAL, DRAFT") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 
+                                // Font Size
                                 Text(
                                     text = "字体大小: ${watermarkFontSizeInput.toInt()} pt",
                                     fontSize = 13.sp,
@@ -1108,12 +1162,176 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                 Slider(
                                     value = watermarkFontSizeInput,
                                     onValueChange = { watermarkFontSizeInput = it },
-                                    valueRange = 16f..72f,
-                                    steps = 5,
+                                    valueRange = 12f..72f,
+                                    steps = 9,
                                     modifier = Modifier.fillMaxWidth()
                                 )
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // Opacity (Transparency)
+                                Text(
+                                    text = "水印透明度: ${(watermarkOpacityInput * 100).toInt()}%",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Slider(
+                                    value = watermarkOpacityInput,
+                                    onValueChange = { watermarkOpacityInput = it },
+                                    valueRange = 0.05f..1.0f,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // Rotation
+                                Text(
+                                    text = "旋转角度: ${watermarkRotationInput.toInt()}°",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Slider(
+                                    value = watermarkRotationInput,
+                                    onValueChange = { watermarkRotationInput = it },
+                                    valueRange = -90f..90f,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // Positioning Preset
+                                Text(
+                                    text = "摆放位置",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val positionsList = listOf(
+                                    "CENTER" to "页面中心",
+                                    "TILE" to "网格平铺",
+                                    "TOP_LEFT" to "左上角",
+                                    "TOP_RIGHT" to "右上角",
+                                    "BOTTOM_LEFT" to "左下角",
+                                    "BOTTOM_RIGHT" to "右下角"
+                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    for (i in positionsList.indices step 2) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            for (j in 0..1) {
+                                                if (i + j < positionsList.size) {
+                                                    val (posVal, posLabel) = positionsList[i + j]
+                                                    val isSelected = watermarkPositionInput == posVal
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .height(38.dp)
+                                                            .clip(RoundedCornerShape(8.dp))
+                                                            .background(
+                                                                if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                                            )
+                                                            .clickable { watermarkPositionInput = posVal }
+                                                            .border(
+                                                                width = 1.dp,
+                                                                color = if (isSelected) MaterialTheme.colorScheme.primary
+                                                                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                                shape = RoundedCornerShape(8.dp)
+                                                            ),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            if (isSelected) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Check,
+                                                                    contentDescription = null,
+                                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                                    modifier = Modifier.size(14.dp)
+                                                                )
+                                                                Spacer(modifier = Modifier.width(4.dp))
+                                                            }
+                                                            Text(
+                                                                text = posLabel,
+                                                                fontSize = 12.sp,
+                                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                                                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                    }
+                                                } else {
+                                                    Spacer(modifier = Modifier.weight(1f))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                // Color Selector
+                                Text(
+                                    text = "水印颜色",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val colorsList = listOf(
+                                    "#808080" to "经典灰",
+                                    "#DC2626" to "防伪红",
+                                    "#2563EB" to "科技蓝",
+                                    "#16A34A" to "安全绿",
+                                    "#000000" to "庄重黑"
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    colorsList.forEach { (hex, label) ->
+                                        val isSelected = watermarkColorInput == hex
+                                        val colorObj = Color(android.graphics.Color.parseColor(hex))
+                                        
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable { watermarkColorInput = hex }
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(28.dp)
+                                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                                    .background(colorObj)
+                                                    .border(
+                                                        width = if (isSelected) 2.5.dp else 1.dp,
+                                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                        shape = androidx.compose.foundation.shape.CircleShape
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = if (hex == "#000000") Color.White else Color.Black,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = label,
+                                                fontSize = 10.sp,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
                                 
-                                Spacer(modifier = Modifier.height(20.dp))
+                                Spacer(modifier = Modifier.height(24.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.End
@@ -1128,7 +1346,16 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                                 Toast.makeText(context, "请输入水印文字", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 showWatermarkDialog = false
-                                                viewModel.addWatermarkToPdf(context, watermarkTextInput, watermarkFontSizeInput, actionPasswordInput)
+                                                viewModel.addWatermarkToPdf(
+                                                    context = context,
+                                                    watermarkText = watermarkTextInput,
+                                                    fontSize = watermarkFontSizeInput,
+                                                    opacity = watermarkOpacityInput,
+                                                    rotation = watermarkRotationInput,
+                                                    position = watermarkPositionInput,
+                                                    colorHex = watermarkColorInput,
+                                                    password = actionPasswordInput
+                                                )
                                             }
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -1259,6 +1486,7 @@ private fun executeAction(
         "IMAGES_FULL" -> viewModel.renderPagesToImages(context, passwordInput)
         "IMAGES_EMBEDDED" -> viewModel.extractEmbeddedImages(context, passwordInput)
         "SPLIT" -> onShowSplitDialog()
+        "ZIP_SPLIT" -> viewModel.splitPdfToZip(context, passwordInput)
         "UNLOCKED" -> {
             if (passwordInput.isEmpty()) {
                 android.widget.Toast.makeText(context, "此文件不需要移除密码或密码未输入", android.widget.Toast.LENGTH_SHORT).show()
@@ -1581,6 +1809,16 @@ fun ToolsScreen(
                     iconTint = Color(0xFF6366F1),
                     badgeText = if (selectedUri == null) "需源文件" else null,
                     onClick = { requireFile { onTriggerAction("SPLIT") } }
+                )
+            }
+            section1Items.add {
+                ActionCard(
+                    title = "单页拆分打包 (ZIP)",
+                    description = "将 PDF 中的每一页分别拆分为独立的单页 PDF 文档，并自动打包为 ZIP 压缩包下载保存。",
+                    icon = Icons.Default.FolderZip,
+                    iconTint = Color(0xFF10B981),
+                    badgeText = if (selectedUri == null) "需源文件" else null,
+                    onClick = { requireFile { onTriggerAction("ZIP_SPLIT") } }
                 )
             }
             if (selectedUri != null && isPasswordProtected) {
@@ -2507,6 +2745,7 @@ private fun downloadFileToPublicDownloads(context: Context, file: File) {
             "pdf" -> "application/pdf"
             "png" -> "image/png"
             "jpg", "jpeg" -> "image/jpeg"
+            "zip" -> "application/zip"
             else -> "application/octet-stream"
         }
 
