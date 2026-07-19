@@ -1,0 +1,6 @@
+{
+  "name": "PDF 工具箱",
+  "description": "多功能 PDF 工具箱，支持提取纯文本、高清图片、内嵌素材、页面拆分、永久移除密码限制、合并 PDF、图片转 PDF、添加文字水印以及编辑元数据。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
