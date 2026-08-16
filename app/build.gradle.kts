@@ -131,6 +131,7 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   implementation(libs.pdfbox.android)
+  implementation(libs.mlkit.document.scanner)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }

@@ -15,6 +15,8 @@ import com.example.database.ExtractionRecord
 import com.example.database.ExtractionRepository
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission
+import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
@@ -67,6 +69,9 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
 
     private val _processingStatus = MutableStateFlow<String>("")
     val processingStatus: StateFlow<String> = _processingStatus.asStateFlow()
+
+    private val _pdfThumbnail = MutableStateFlow<Bitmap?>(null)
+    val pdfThumbnail: StateFlow<Bitmap?> = _pdfThumbnail.asStateFlow()
 
     private val _eventFlow = MutableSharedFlow<UiEvent>()
     val eventFlow: SharedFlow<UiEvent> = _eventFlow.asSharedFlow()
@@ -155,6 +160,10 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                     _pdfCreator.value = info.creator ?: ""
                     
                     doc.close()
+
+                    if (!doc.isEncrypted) {
+                        generateThumbnail(tempFile)
+                    }
                 } catch (e: Exception) {
                     // It failed to load or requires password
                     _isPasswordProtected.value = true
@@ -185,6 +194,7 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
         _selectedFileSize.value = 0L
         _pageCount.value = 0
         _isPasswordProtected.value = false
+        _pdfThumbnail.value = null
         _pdfTitle.value = ""
         _pdfAuthor.value = ""
         _pdfSubject.value = ""
@@ -611,7 +621,7 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
 
                 sourceDoc.save(unlockedFile)
                 sourceDoc.close()
-
+                
                 val summary = "成功移除密码限制，保存为无密PDF"
                 
                 // Save history
@@ -632,6 +642,44 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
             }
         }
     }
+
+    // Task 6: Encrypt PDF (Add Password)
+    fun encryptPdf(context: Context, password: String) {
+        val uri = _selectedFileUri.value ?: return
+        val fileName = _selectedFileName.value ?: "document.pdf"
+        _isProcessing.value = true
+        _processingStatus.value = "正在加密 PDF 文件..."
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val tempFile = copyUriToTempFile(context, uri)
+                val sourceDoc = PDDocument.load(tempFile)
+
+                val ap = AccessPermission()
+                ap.setCanPrint(false)
+                
+                val spp = StandardProtectionPolicy(password, password, ap)
+                spp.encryptionKeyLength = 128
+                spp.setPermissions(ap)
+                sourceDoc.protect(spp)
+
+                val baseName = fileName.substringBeforeLast(".")
+                val outputFolder = File(context.getExternalFilesDir("extracted_encrypted"), "encrypted_pdfs")
+                outputFolder.mkdirs()
+                val encryptedFile = File(outputFolder, "${baseName}_已加密.pdf")
+
+                sourceDoc.save(encryptedFile)
+                sourceDoc.close()
+                _eventFlow.emit(UiEvent.OperationSuccess("加密成功", encryptedFile.absolutePath, "ENCRYPT"))
+            } catch (e: Exception) {
+                Log.e("PdfViewModel", "Encrypt PDF failed", e)
+                _eventFlow.emit(UiEvent.ShowToast("PDF 加密失败: ${e.localizedMessage}"))
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
 
     fun deleteHistoryRecord(record: ExtractionRecord) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -1151,9 +1199,35 @@ class PdfViewModel(private val repository: ExtractionRepository) : ViewModel() {
                 _pdfKeywords.value = info.keywords ?: ""
                 _pdfCreator.value = info.creator ?: ""
                 doc.close()
+                generateThumbnail(tempFile)
             } catch (e: Exception) {
                 Log.e("PdfViewModel", "Failed to load metadata with password", e)
             }
+        }
+    }
+
+    private fun generateThumbnail(file: File) {
+        try {
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(pfd)
+            if (renderer.pageCount > 0) {
+                val page = renderer.openPage(0)
+                val width = page.width
+                val height = page.height
+                val scale = (240f / width).coerceAtMost(320f / height).coerceAtLeast(0.1f)
+                val bitmapWidth = (width * scale).toInt().coerceAtLeast(1)
+                val bitmapHeight = (height * scale).toInt().coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bitmap)
+                canvas.drawColor(android.graphics.Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                _pdfThumbnail.value = bitmap
+                page.close()
+            }
+            renderer.close()
+            pfd.close()
+        } catch (ex: Exception) {
+            Log.e("PdfViewModel", "Failed to generate preview thumbnail", ex)
         }
     }
 }

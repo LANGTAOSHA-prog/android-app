@@ -52,6 +52,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.draw.drawBehind
+import android.view.DragEvent
+import android.view.View
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -62,6 +70,9 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.PdfViewModel
 import com.example.viewmodel.PdfViewModelFactory
 import com.example.viewmodel.UiEvent
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import java.io.File
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
@@ -105,6 +116,7 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
     val selectedName by viewModel.selectedFileName.collectAsStateWithLifecycle()
     val selectedSize by viewModel.selectedFileSize.collectAsStateWithLifecycle()
     val pageCount by viewModel.pageCount.collectAsStateWithLifecycle()
+    val pdfThumbnail by viewModel.pdfThumbnail.collectAsStateWithLifecycle()
     val isPasswordProtected by viewModel.isPasswordProtected.collectAsStateWithLifecycle()
     val isProcessing by viewModel.isProcessing.collectAsStateWithLifecycle()
     val processingProgress by viewModel.processingProgress.collectAsStateWithLifecycle()
@@ -135,6 +147,41 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
     var showImagesToPdfDialog by remember { mutableStateOf(false) }
     var showWatermarkDialog by remember { mutableStateOf(false) }
     var showMetadataDialog by remember { mutableStateOf(false) }
+    var showEncryptionDialog by remember { mutableStateOf(false) }
+    var encryptionPasswordInput by remember { mutableStateOf("") }
+    
+    // Scanner
+    val scanner = remember {
+        GmsDocumentScanning.getClient(
+            GmsDocumentScannerOptions.Builder()
+                .setGalleryImportAllowed(false)
+                .setPageLimit(1)
+                .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
+                .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                .build()
+        )
+    }
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val scanningResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
+            scanningResult?.pdf?.uri?.let { uri ->
+                viewModel.selectFile(context, uri)
+            }
+        }
+    }
+    val onScanClick: () -> Unit = {
+        scanner.getStartScanIntent(context as android.app.Activity)
+            .addOnSuccessListener { intentSender ->
+                scannerLauncher.launch(
+                    androidx.activity.result.IntentSenderRequest.Builder(intentSender).build()
+                )
+            }
+            .addOnFailureListener { e ->
+                Toast.makeText(context, "扫描启动失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+    }
     
     var watermarkTextInput by remember { mutableStateOf("") }
     var watermarkFontSizeInput by remember { mutableFloatStateOf(36f) }
@@ -313,9 +360,11 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                             selectedName = selectedName,
                             selectedSize = selectedSize,
                             pageCount = pageCount,
+                            pdfThumbnail = pdfThumbnail,
                             isPasswordProtected = isPasswordProtected,
                             onPickFile = { documentPickerLauncher.launch(arrayOf("application/pdf")) },
                             onClearFile = { viewModel.clearSelectedFile() },
+                            onFileSelected = { uri -> viewModel.selectFile(context, uri) },
                             onTriggerAction = { action ->
                                 if (isPasswordProtected && actionPasswordInput.isEmpty()) {
                                     // File is encrypted, request password first
@@ -342,7 +391,9 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                 } else {
                                     showMetadataDialog = true
                                 }
-                            }
+                            },
+                            onEncryptClick = { showEncryptionDialog = true },
+                            onScanClick = onScanClick
                         )
                     }
                     1 -> {
@@ -594,6 +645,80 @@ fun PdfExtractorApp(repository: ExtractionRepository) {
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                                 ) {
                                     Text("确认", color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Encryption Dialog
+            if (showEncryptionDialog) {
+                var showPassword by remember { mutableStateOf(false) }
+                Dialog(
+                    onDismissRequest = { showEncryptionDialog = false },
+                    properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false)
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Encrypt",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "PDF 加密保护",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = encryptionPasswordInput,
+                                onValueChange = { encryptionPasswordInput = it },
+                                label = { Text("设置访问密码") },
+                                singleLine = true,
+                                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                trailingIcon = {
+                                    IconButton(onClick = { showPassword = !showPassword }) {
+                                        Icon(
+                                            imageVector = if (showPassword) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                            contentDescription = "Toggle password visibility"
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(20.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { showEncryptionDialog = false }) {
+                                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Button(
+                                    onClick = {
+                                        viewModel.encryptPdf(context, encryptionPasswordInput)
+                                        showEncryptionDialog = false
+                                        encryptionPasswordInput = ""
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("加密并保存", color = Color.White)
                                 }
                             }
                         }
@@ -1503,14 +1628,18 @@ fun ToolsScreen(
     selectedName: String?,
     selectedSize: Long,
     pageCount: Int,
+    pdfThumbnail: android.graphics.Bitmap?,
     isPasswordProtected: Boolean,
     onPickFile: () -> Unit,
     onClearFile: () -> Unit,
+    onFileSelected: (Uri) -> Unit,
     onTriggerAction: (String) -> Unit,
     onMergeClick: () -> Unit,
     onImagesToPdfClick: () -> Unit,
     onWatermarkClick: () -> Unit,
-    onMetadataClick: () -> Unit
+    onMetadataClick: () -> Unit,
+    onEncryptClick: () -> Unit,
+    onScanClick: () -> Unit
 ) {
     val context = LocalContext.current
     val requireFile = { action: () -> Unit ->
@@ -1536,233 +1665,81 @@ fun ToolsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
-            if (selectedUri == null) {
-                // Premium Workspace Header & Selector Card
-                Card(
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 20.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        // Logo Illustration with soft glow
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FolderZip,
-                                contentDescription = "PDF Extractor Logo",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(36.dp)
-                            )
-                        }
+            DragAndDropUploadComponent(
+                selectedUri = selectedUri,
+                selectedName = selectedName,
+                selectedSize = selectedSize,
+                pageCount = pageCount,
+                pdfThumbnail = pdfThumbnail,
+                isPasswordProtected = isPasswordProtected,
+                onPickFile = onPickFile,
+                onClearFile = onClearFile,
+                onFileDropped = onFileSelected
+            )
 
-                        Spacer(modifier = Modifier.height(16.dp))
+            // Section: Popular Tools
+            SectionHeader(
+                text = "热门实用工具 (Popular Tools)",
+                barColor = MaterialTheme.colorScheme.tertiary
+            )
 
-                        Text(
-                            text = "PDF 极速解压工坊",
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 20.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Text(
-                            text = "专业的本地离线 PDF 内容提取、文档合并与安全控制工具包",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 16.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        // Dynamic Gradient-Border Picker Area
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.03f))
-                                .border(
-                                    1.5.dp,
-                                    Brush.horizontalGradient(
-                                        listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.secondary
-                                        )
-                                    ),
-                                    RoundedCornerShape(16.dp)
-                                )
-                                .clickable(onClick = onPickFile)
-                                .padding(vertical = 24.dp, horizontal = 16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.FileOpen,
-                                    contentDescription = "Import",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(32.dp)
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    text = "点击导入 PDF 文件开始处理",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "支持提取纯文本、转换高清图片与解除文档限制",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
+            val popularItems = listOf<@Composable () -> Unit>(
+                {
+                    ActionCard(
+                        title = "解压提取纯文本",
+                        description = "最常用的功能：智能扫描解析 PDF 书面文字，显示并导出为 TXT 文本。",
+                        icon = Icons.Default.Description,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        badgeText = if (selectedUri == null) "需源文件" else null,
+                        onClick = { requireFile { onTriggerAction("TEXT") } }
+                    )
+                },
+                {
+                    ActionCard(
+                        title = "合并多个 PDF 文件",
+                        description = "最常用的功能：合并两个或多个 PDF 文档，自定义排序，并快速编译。",
+                        icon = Icons.Default.LibraryBooks,
+                        iconTint = Color(0xFF06B6D4),
+                        badgeText = "免选源文件",
+                        badgeColor = Color(0xFF06B6D4),
+                        onClick = onMergeClick
+                    )
+                },
+                {
+                    ActionCard(
+                        title = "全页转换为高清图片",
+                        description = "最常用的功能：将 PDF 每一页高精度渲染输出为 PNG 图像，保留完整版式。",
+                        icon = Icons.Default.Image,
+                        iconTint = MaterialTheme.colorScheme.secondary,
+                        badgeText = if (selectedUri == null) "需源文件" else null,
+                        onClick = { requireFile { onTriggerAction("IMAGES_FULL") } }
+                    )
+                },
+                {
+                    ActionCard(
+                        title = "PDF 加密 (Encrypt)",
+                        description = "最常用的功能：为 PDF 文档添加高强度密码保护，防止未经授权的访问。",
+                        icon = Icons.Default.Lock,
+                        iconTint = MaterialTheme.colorScheme.error,
+                        badgeText = if (selectedUri == null) "需源文件" else null,
+                        onClick = { requireFile { onEncryptClick() } }
+                    )
+                },
+                {
+                    ActionCard(
+                        title = "手机扫描 PDF",
+                        description = "最常用的功能：使用相机扫描文档，自动边缘检测、修正透视，并直接生成 PDF。",
+                        icon = Icons.Default.CameraAlt,
+                        iconTint = MaterialTheme.colorScheme.tertiary,
+                        badgeText = null,
+                        onClick = onScanClick
+                    )
                 }
-            } else {
-                // Selected Active File Information Card
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 20.dp)
-                ) {
-                    Column {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // PDF Badge
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PictureAsPdf,
-                                    contentDescription = "Active PDF",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(26.dp)
-                                )
-                            }
+            )
 
-                            Spacer(modifier = Modifier.width(12.dp))
+            ResponsiveGrid(columnsCount = columns, content = popularItems)
 
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = selectedName ?: "未知 PDF 文档",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    // Chip 1: Size
-                                    SuggestionChip(
-                                        onClick = {},
-                                        label = { Text(formatFileSize(selectedSize), fontSize = 10.sp) },
-                                        colors = SuggestionChipDefaults.suggestionChipColors(
-                                            containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
-                                        ),
-                                        border = null,
-                                        modifier = Modifier.height(20.dp)
-                                    )
-                                    // Chip 2: Page count
-                                    if (pageCount > 0) {
-                                        SuggestionChip(
-                                            onClick = {},
-                                            label = { Text("$pageCount 页", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
-                                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                                                labelColor = MaterialTheme.colorScheme.primary
-                                            ),
-                                            border = null,
-                                            modifier = Modifier.height(20.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Close Button
-                            IconButton(
-                                onClick = onClearFile,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), CircleShape)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Unload File",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-
-                        // Security Bar
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(
-                                    if (isPasswordProtected) Color(0xFFEF4444).copy(alpha = 0.08f)
-                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
-                                )
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (isPasswordProtected) Icons.Default.Lock else Icons.Default.LockOpen,
-                                    contentDescription = "Security Status",
-                                    tint = if (isPasswordProtected) Color(0xFFEF4444) else Color(0xFF10B981),
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (isPasswordProtected) "文档受密码保护" else "文档安全 (未加密)",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (isPasswordProtected) Color(0xFFEF4444) else Color(0xFF10B981)
-                                )
-                            }
-
-                            Text(
-                                text = "运行中",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Section 1: Content Extraction & Security
             SectionHeader(
@@ -1905,6 +1882,416 @@ fun ToolsScreen(
             )
 
             ResponsiveGrid(columnsCount = columns, content = section3Items)
+        }
+    }
+}
+
+@Composable
+fun DragAndDropBox(
+    modifier: Modifier = Modifier,
+    onFileDropped: (Uri) -> Unit,
+    content: @Composable (isDragging: Boolean) -> Unit
+) {
+    var isDraggingOver by remember { mutableStateOf(false) }
+    
+    AndroidView(
+        factory = { context ->
+            ComposeView(context).apply {
+                setContent {
+                    content(isDraggingOver)
+                }
+                setOnDragListener { _, event ->
+                    when (event.action) {
+                        DragEvent.ACTION_DRAG_STARTED -> {
+                            true
+                        }
+                        DragEvent.ACTION_DRAG_ENTERED -> {
+                            isDraggingOver = true
+                            true
+                        }
+                        DragEvent.ACTION_DRAG_EXITED -> {
+                            isDraggingOver = false
+                            true
+                        }
+                        DragEvent.ACTION_DROP -> {
+                            isDraggingOver = false
+                            val clipData = event.clipData
+                            if (clipData != null && clipData.itemCount > 0) {
+                                val item = clipData.getItemAt(0)
+                                val uri = item.uri
+                                if (uri != null) {
+                                    onFileDropped(uri)
+                                }
+                            }
+                            true
+                        }
+                        DragEvent.ACTION_DRAG_ENDED -> {
+                            isDraggingOver = false
+                            true
+                        }
+                        else -> false
+                    }
+                }
+            }
+        },
+        update = { composeView ->
+            composeView.setContent {
+                content(isDraggingOver)
+            }
+        },
+        modifier = modifier
+    )
+}
+
+fun Modifier.dashedBorder(
+    width: androidx.compose.ui.unit.Dp,
+    color: Color,
+    cornerRadius: androidx.compose.ui.unit.Dp = 0.dp
+) = drawBehind {
+    val stroke = Stroke(
+        width = width.toPx(),
+        pathEffect = PathEffect.dashPathEffect(floatArrayOf(16f, 12f), 0f)
+    )
+    if (cornerRadius > 0.dp) {
+        drawRoundRect(
+            color = color,
+            style = stroke,
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius.toPx(), cornerRadius.toPx())
+        )
+    } else {
+        drawRect(
+            color = color,
+            style = stroke
+        )
+    }
+}
+
+@Composable
+fun DragAndDropUploadComponent(
+    selectedUri: Uri?,
+    selectedName: String?,
+    selectedSize: Long,
+    pageCount: Int,
+    pdfThumbnail: android.graphics.Bitmap?,
+    isPasswordProtected: Boolean,
+    onPickFile: () -> Unit,
+    onClearFile: () -> Unit,
+    onFileDropped: (Uri) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    
+    DragAndDropBox(
+        onFileDropped = onFileDropped,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 20.dp)
+    ) { isDragging ->
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDragging) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                } else {
+                    MaterialTheme.colorScheme.surface
+                }
+            ),
+            elevation = CardDefaults.cardElevation(
+                defaultElevation = if (isDragging) 6.dp else 2.dp
+            ),
+            border = BorderStroke(
+                width = if (isDragging) 2.dp else 1.dp,
+                color = if (isDragging) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                }
+            )
+        ) {
+            if (selectedUri == null) {
+                // EMPTY STATE: Drag & Drop Dropzone
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onPickFile)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Header title for workspace
+                    Text(
+                        text = "PDF 极速解压工坊",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 20.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "专业的本地离线 PDF 内容提取、文档合并与安全控制工具包",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Dashed border upload area
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)
+                                else MaterialTheme.colorScheme.primary.copy(alpha = 0.02f)
+                            )
+                            .dashedBorder(
+                                width = 1.5.dp,
+                                color = if (isDragging) MaterialTheme.colorScheme.primary 
+                                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                                cornerRadius = 16.dp
+                            )
+                            .padding(vertical = 32.dp, horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            // Upload icon
+                            Box(
+                                modifier = Modifier
+                                    .size(60.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isDragging) Icons.Default.CloudUpload else Icons.Default.FileOpen,
+                                    contentDescription = "Upload",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            Text(
+                                text = if (isDragging) "释放以导入 PDF 文件" else "拖拽 PDF 文件到此处，或点击浏览文件",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                textAlign = TextAlign.Center
+                            )
+                            
+                            Spacer(modifier = Modifier.height(6.dp))
+                            
+                            Text(
+                                text = "支持提取纯文本、转换高清图片与解除文档限制",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            } else {
+                // FILE SELECTED STATE: Unified beautiful upload area showing filename, size & replace options
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isDragging) {
+                        // Overlay notification inside the card during drag-over
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(140.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f))
+                                .dashedBorder(1.5.dp, MaterialTheme.colorScheme.primary, 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudUpload,
+                                    contentDescription = "Drop file",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "释放以替换当前的 PDF 文件",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    } else {
+                        // Display selected file info
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // PDF icon badge / Thumbnail Preview
+                            if (pdfThumbnail != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(60.dp, 80.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.White)
+                                        .border(1.5.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                        .padding(2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = pdfThumbnail.asImageBitmap(),
+                                        contentDescription = "PDF First Page Preview",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PictureAsPdf,
+                                        contentDescription = "Active PDF",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(16.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = selectedName ?: "未知 PDF 文档",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                
+                                Spacer(modifier = Modifier.height(6.dp))
+                                
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Size Chip
+                                    SuggestionChip(
+                                        onClick = {},
+                                        label = { Text(formatFileSize(selectedSize), fontSize = 11.sp, fontWeight = FontWeight.Medium) },
+                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                            containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                                        ),
+                                        border = null,
+                                        modifier = Modifier.height(24.dp)
+                                    )
+                                    
+                                    // Page count Chip
+                                    if (pageCount > 0) {
+                                        SuggestionChip(
+                                            onClick = {},
+                                            label = { Text("$pageCount 页", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                                labelColor = MaterialTheme.colorScheme.primary
+                                            ),
+                                            border = null,
+                                            modifier = Modifier.height(24.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Action buttons
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // Reselect (replace) button
+                                IconButton(
+                                    onClick = onPickFile,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f), CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SwapHoriz,
+                                        contentDescription = "Replace File",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                // Clear button
+                                IconButton(
+                                    onClick = onClearFile,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.06f), CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Unload File",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Security status Bar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isPasswordProtected) Color(0xFFEF4444).copy(alpha = 0.08f)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                                )
+                                .padding(horizontal = 20.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (isPasswordProtected) Icons.Default.Lock else Icons.Default.LockOpen,
+                                    contentDescription = "Security Status",
+                                    tint = if (isPasswordProtected) Color(0xFFEF4444) else Color(0xFF10B981),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isPasswordProtected) "文档受密码保护" else "文档安全 (未加密)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (isPasswordProtected) Color(0xFFEF4444) else Color(0xFF10B981)
+                                )
+                            }
+                            
+                            Text(
+                                text = "拖动新 PDF 文件到此处可快速替换",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
